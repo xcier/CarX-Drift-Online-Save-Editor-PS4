@@ -38,3 +38,38 @@ def set_all_keys(obj: Any, updates: Dict[str, Any]) -> int:
         for v in obj:
             changed += set_all_keys(v, updates)
     return changed
+
+
+def find_first_keys(obj: Any, keys: List[str]) -> Dict[str, Any]:
+    """Return a mapping of key->value for the *first* occurrence of each key found in obj.
+
+    Traversal is depth-first. Only dict keys are considered. Once a key is found, it is not
+    overwritten by later occurrences.
+
+    This is used by the UI to populate form fields from the extracted save data.
+    """
+    remaining = set(keys)
+    found: Dict[str, Any] = {}
+
+    def _walk(x: Any) -> None:
+        nonlocal remaining
+        if not remaining:
+            return
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k in remaining:
+                    found[k] = v
+                    remaining.remove(k)
+                    if not remaining:
+                        return
+                _walk(v)
+                if not remaining:
+                    return
+        elif isinstance(x, list):
+            for v in x:
+                _walk(v)
+                if not remaining:
+                    return
+
+    _walk(obj)
+    return found

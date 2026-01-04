@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict, List
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QPalette, QColor, QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QFileDialog, QPlainTextEdit, QMessageBox, QCheckBox, QFormLayout, QSpinBox,
-    QTabWidget
+    QTabWidget, QSplitter, QComboBox, QStackedWidget, QTreeWidget, QTreeWidgetItem, QMenu
 )
 
 from core.extract import extract
+from core.json_ops import read_text_any, try_load_json, find_first_keys
 from core.apply_presets import apply_updates_to_blocks
 from core.repack import repack
 
@@ -186,6 +188,7 @@ class MainWindow(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_currency_tab(), "Coins / Rating / XP")
         self.tabs.addTab(self._build_stats_tab(), "Time / Races / Cups / Points")
+        self.tabs.addTab(self._build_browser_tab(), "Data Browser")
         vl.addWidget(self.tabs)
 
         root.addWidget(vals)
@@ -211,6 +214,9 @@ class MainWindow(QWidget):
         self.btn_extract = QPushButton("1) Extract")
         self.btn_extract.clicked.connect(self.on_extract)
 
+        self.btn_load_values = QPushButton("Load values from extracted save")
+        self.btn_load_values.clicked.connect(self.on_load_values)
+
         self.btn_currency = QPushButton("2) Apply: Currency")
         self.btn_currency.clicked.connect(self.on_apply_currency)
 
@@ -224,6 +230,7 @@ class MainWindow(QWidget):
         self.btn_repack.clicked.connect(self.on_repack)
 
         r3.addWidget(self.btn_extract)
+        r3.addWidget(self.btn_load_values)
         r3.addWidget(self.btn_currency)
         r3.addWidget(self.btn_unlock)
         r3.addWidget(self.btn_stats)
@@ -347,6 +354,380 @@ class MainWindow(QWidget):
         self.work_dir.mkdir(parents=True, exist_ok=True)
         return True
 
+    
+    def on_load_values(self) -> None:
+        if not self._ensure_extracted():
+            return
+        self._populate_fields_from_save(show_summary=True)
+
+    def _populate_fields_from_save(self, show_summary: bool = False) -> None:
+        """Scan extracted JSON blocks and populate UI fields with current save values."""
+        if not self._ensure_extracted():
+            return
+
+        keys = [
+            # Currency
+            "coins", "ratingPoints", "playerExp",
+            # Stats
+            "timeInGame", "racesPlayed", "driftRacesPlayed", "timeAttackRacesPlayed", "MPRacesPlayed",
+            "maxPointsPerDrift", "maxPointsPerRace", "averagePointsPerRace",
+            "cups1", "cups2", "cups3",
+        ]
+
+        found: Dict[str, Any] = {}
+        blocks_dir = self.work_dir / "blocks"
+        for p in sorted(blocks_dir.glob("*.json")):
+            try:
+                txt = read_text_any(p)
+                obj = try_load_json(txt)
+                if obj is None:
+                    continue
+                got = find_first_keys(obj, keys)
+                for k, v in got.items():
+                    if k not in found:
+                        found[k] = v
+                if len(found) == len(keys):
+                    break
+            except Exception:
+                continue
+
+        # Apply to widgets with reasonable type coercion
+        def _set_line(le: QLineEdit, v: Any) -> None:
+            if v is None:
+                return
+            le.setText(str(v))
+
+        def _set_spin(sb: QSpinBox, v: Any) -> None:
+            try:
+                if isinstance(v, str):
+                    v = int(float(v)) if any(c in v for c in ".eE") else int(v)
+                sb.setValue(int(v))
+            except Exception:
+                pass
+
+        if "coins" in found:
+            _set_spin(self.coins_spin, found["coins"])
+        if "ratingPoints" in found:
+            _set_line(self.rating_edit, found["ratingPoints"])
+        if "playerExp" in found:
+            _set_line(self.player_exp_edit, found["playerExp"])
+
+        if "timeInGame" in found:
+            _set_spin(self.time_seconds, found["timeInGame"])
+            self._refresh_time_labels()
+
+        if "racesPlayed" in found:
+            _set_line(self.races_played_edit, found["racesPlayed"])
+        if "driftRacesPlayed" in found:
+            _set_line(self.drift_races_played_edit, found["driftRacesPlayed"])
+        if "timeAttackRacesPlayed" in found:
+            _set_line(self.time_attack_races_played_edit, found["timeAttackRacesPlayed"])
+        if "MPRacesPlayed" in found:
+            _set_line(self.mp_races_played_edit, found["MPRacesPlayed"])
+
+        if "maxPointsPerDrift" in found:
+            _set_line(self.max_points_per_drift_edit, found["maxPointsPerDrift"])
+        if "maxPointsPerRace" in found:
+            _set_line(self.max_points_per_race_edit, found["maxPointsPerRace"])
+        if "averagePointsPerRace" in found:
+            _set_line(self.avg_points_per_race_edit, found["averagePointsPerRace"])
+
+        if "cups1" in found:
+            _set_line(self.cups1_edit, found["cups1"])
+        if "cups2" in found:
+            _set_line(self.cups2_edit, found["cups2"])
+        if "cups3" in found:
+            _set_line(self.cups3_edit, found["cups3"])
+
+        if show_summary:
+            missing = [k for k in keys if k not in found]
+            if missing:
+                QMessageBox.information(
+                    self,
+                    "Loaded values (partial)",
+                    "Loaded some values from the extracted save.\n\n"
+                    f"Missing keys (not found in first matching JSON blocks):\n- " + "\n- ".join(missing)
+                )
+            else:
+                QMessageBox.information(self, "Loaded values", "Loaded current values from the extracted save.")
+
+    # ---------------------------
+    # Data browser tab
+    # ---------------------------
+
+    def _build_browser_tab(self) -> QWidget:
+        w = QWidget()
+        root = QVBoxLayout(w)
+
+        top = QHBoxLayout()
+
+        self.browser_refresh_btn = QPushButton("Refresh")
+        self.browser_refresh_btn.clicked.connect(self._browser_refresh)
+
+        self.browser_load_btn = QPushButton("Load values into forms")
+        self.browser_load_btn.clicked.connect(self.on_load_values)
+
+        self.browser_show_all = QCheckBox("Show all blocks (may be large)")
+        self.browser_show_all.setChecked(False)
+        self.browser_show_all.toggled.connect(self._browser_refresh)
+
+        self.browser_rank = QCheckBox("Rank blocks by player keys")
+        self.browser_rank.setChecked(True)
+        self.browser_rank.toggled.connect(self._browser_refresh)
+
+        self.browser_view_mode = QComboBox()
+        self.browser_view_mode.addItems([
+            "Tree (JSON)",
+            "Pretty JSON",
+            "Raw text",
+            "Hex (binary preview)",
+        ])
+        self.browser_view_mode.currentIndexChanged.connect(self._browser_open_selected)
+
+        top.addWidget(self.browser_refresh_btn)
+        top.addWidget(self.browser_load_btn)
+        top.addStretch(1)
+        top.addWidget(self.browser_rank)
+        top.addWidget(self.browser_show_all)
+        top.addWidget(QLabel("View:"))
+        top.addWidget(self.browser_view_mode)
+        root.addLayout(top)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        self.browser_list = QTreeWidget()
+        self.browser_list.setHeaderLabels(["Block", "Score"])
+        self.browser_list.setColumnWidth(0, 420)
+        self.browser_list.itemSelectionChanged.connect(self._browser_open_selected)
+
+        # Right: a tree viewer + text viewer (stacked)
+        self.browser_json_tree = QTreeWidget()
+        self.browser_json_tree.setHeaderLabels(["Key / Index", "Value preview"])
+        self.browser_json_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.browser_json_tree.customContextMenuRequested.connect(self._on_json_tree_menu)
+
+        self.browser_text = QPlainTextEdit()
+        self.browser_text.setReadOnly(True)
+
+        self.browser_right = QStackedWidget()
+        self.browser_right.addWidget(self.browser_json_tree)  # index 0
+        self.browser_right.addWidget(self.browser_text)       # index 1
+
+        splitter.addWidget(self.browser_list)
+        splitter.addWidget(self.browser_right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+
+        root.addWidget(splitter, 1)
+
+        self.browser_text.setPlainText("Run Extract first, then click Refresh to browse extracted blocks.")
+        self.browser_right.setCurrentIndex(1)
+        return w
+
+    def _browser_player_keys(self) -> List[str]:
+        # Keys that typically live in the “player-ish” chunks.
+        return [
+            "coins", "ratingPoints", "playerExp",
+            "timeInGame", "racesPlayed", "driftRacesPlayed", "timeAttackRacesPlayed", "MPRacesPlayed",
+            "maxPointsPerDrift", "maxPointsPerRace", "averagePointsPerRace",
+            "cups1", "cups2", "cups3",
+        ]
+
+    def _browser_refresh(self) -> None:
+        if not hasattr(self, "browser_list"):
+            return
+
+        self.browser_list.clear()
+        self.browser_json_tree.clear()
+
+        if not self._ensure_extracted():
+            return
+
+        manifest_path = self.work_dir / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            blocks = manifest.get("blocks", [])
+        except Exception as e:
+            self.browser_text.setPlainText(f"Failed to read manifest.json: {e}")
+            self.browser_right.setCurrentIndex(1)
+            return
+
+        limit = None if self.browser_show_all.isChecked() else 20
+        shown = blocks if limit is None else blocks[:limit]
+
+        ranked = []
+        keys = self._browser_player_keys()
+        for b in shown:
+            out_name = b.get("out_name", "")
+            p = (self.work_dir / out_name) if out_name else None
+            score = 0
+            found_keys = []
+            if self.browser_rank.isChecked() and p and p.exists() and p.suffix.lower() == ".json":
+                try:
+                    txt = read_text_any(p)
+                    obj = try_load_json(txt)
+                    if obj is not None:
+                        found = self._find_keys_in_obj(obj, keys)
+                        found_keys = sorted(found)
+                        score = len(found)
+                except Exception:
+                    pass
+            ranked.append((score, found_keys, b))
+
+        if self.browser_rank.isChecked():
+            ranked.sort(key=lambda t: (t[0], t[2].get("index", -1)), reverse=True)
+
+        for score, found_keys, b in ranked:
+            idx = b.get("index", -1)
+            out_name = b.get("out_name", "")
+            kind = b.get("kind", "")
+            note = b.get("note", "")
+            label = f"{idx:03d}  {Path(out_name).name}  [{kind}]"
+            if note:
+                label += f"  – {note}"
+            if found_keys:
+                label += f"  {{" + ", ".join(found_keys[:6]) + ("…" if len(found_keys) > 6 else "") + "}}"
+
+            it = QTreeWidgetItem([label, str(score)])
+            it.setData(0, Qt.ItemDataRole.UserRole, out_name)
+            self.browser_list.addTopLevelItem(it)
+
+        if self.browser_list.topLevelItemCount() == 0:
+            self.browser_text.setPlainText("No blocks listed in manifest.json.")
+            self.browser_right.setCurrentIndex(1)
+        else:
+            self.browser_list.setCurrentItem(self.browser_list.topLevelItem(0))
+
+    def _browser_open_selected(self) -> None:
+        if not hasattr(self, "browser_list"):
+            return
+        items = self.browser_list.selectedItems()
+        if not items:
+            return
+        it = items[0]
+        out_name = it.data(0, Qt.ItemDataRole.UserRole)
+        if not out_name:
+            return
+
+        p = self.work_dir / out_name
+        if not p.exists():
+            self.browser_text.setPlainText(f"Missing file: {p}")
+            self.browser_right.setCurrentIndex(1)
+            return
+
+        mode = self.browser_view_mode.currentText()
+
+        try:
+            if p.suffix.lower() == ".json":
+                txt = read_text_any(p)
+                obj = try_load_json(txt)
+
+                if mode == "Raw text" or obj is None:
+                    self.browser_text.setPlainText(txt)
+                    self.browser_right.setCurrentIndex(1)
+                    return
+
+                if mode == "Pretty JSON":
+                    self.browser_text.setPlainText(json.dumps(obj, indent=2, ensure_ascii=False))
+                    self.browser_right.setCurrentIndex(1)
+                    return
+
+                # Tree (JSON)
+                self.browser_json_tree.clear()
+                root_item = QTreeWidgetItem(["$", ""])
+                root_item.setData(0, Qt.ItemDataRole.UserRole, "$")
+                self.browser_json_tree.addTopLevelItem(root_item)
+                self._populate_json_tree(root_item, obj, "$")
+                root_item.setExpanded(True)
+                self.browser_right.setCurrentIndex(0)
+                return
+
+            # Binary / other
+            b = p.read_bytes()
+            head = b[:4096]
+            if mode == "Hex (binary preview)":
+                hex_dump = " ".join(f"{x:02X}" for x in head)
+                self.browser_text.setPlainText(
+                    f"{p.name} (binary)\nSize: {len(b)} bytes\n\nFirst 4096 bytes (hex):\n{hex_dump}"
+                )
+            else:
+                self.browser_text.setPlainText(f"{p.name} (binary)\nSize: {len(b)} bytes\n\nSelect 'Hex (binary preview)' to view bytes.")
+            self.browser_right.setCurrentIndex(1)
+
+        except Exception as e:
+            self.browser_text.setPlainText(f"Failed to open {p}: {e}")
+            self.browser_right.setCurrentIndex(1)
+
+    def _find_keys_in_obj(self, obj: Any, keys: List[str]) -> set:
+        keyset = set(keys)
+        found = set()
+        stack = [obj]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, dict):
+                for k, v in cur.items():
+                    if k in keyset:
+                        found.add(k)
+                    stack.append(v)
+            elif isinstance(cur, list):
+                stack.extend(cur)
+        return found
+
+    def _populate_json_tree(self, parent: QTreeWidgetItem, obj: Any, path: str) -> None:
+        # Keep this snappy: limit children per node to prevent UI lockups.
+        MAX_CHILDREN = 500
+
+        def preview(v: Any) -> str:
+            if isinstance(v, (dict, list)):
+                if isinstance(v, dict):
+                    return f"{{...}} ({len(v)})"
+                return f"[...] ({len(v)})"
+            s = str(v)
+            if len(s) > 120:
+                s = s[:117] + "..."
+            return s
+
+        if isinstance(obj, dict):
+            for i, (k, v) in enumerate(obj.items()):
+                if i >= MAX_CHILDREN:
+                    QTreeWidgetItem(parent, ["…", f"truncated at {MAX_CHILDREN} children"]).setData(0, Qt.ItemDataRole.UserRole, path)
+                    break
+                child_path = f"{path}.{k}" if path != "$" else f"$.{k}"
+                item = QTreeWidgetItem([str(k), preview(v)])
+                item.setData(0, Qt.ItemDataRole.UserRole, child_path)
+                parent.addChild(item)
+                if isinstance(v, (dict, list)):
+                    self._populate_json_tree(item, v, child_path)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                if i >= MAX_CHILDREN:
+                    QTreeWidgetItem(parent, ["…", f"truncated at {MAX_CHILDREN} children"]).setData(0, Qt.ItemDataRole.UserRole, path)
+                    break
+                child_path = f"{path}[{i}]"
+                item = QTreeWidgetItem([f"[{i}]", preview(v)])
+                item.setData(0, Qt.ItemDataRole.UserRole, child_path)
+                parent.addChild(item)
+                if isinstance(v, (dict, list)):
+                    self._populate_json_tree(item, v, child_path)
+
+    def _on_json_tree_menu(self, pos) -> None:
+        item = self.browser_json_tree.itemAt(pos)
+        if item is None:
+            return
+        path = item.data(0, Qt.ItemDataRole.UserRole) or ""
+        menu = QMenu(self.browser_json_tree)
+
+        act_copy_path = QAction("Copy JSON path", self.browser_json_tree)
+        act_copy_path.triggered.connect(lambda: QApplication.clipboard().setText(str(path)))
+        menu.addAction(act_copy_path)
+
+        # Copy value preview (column 1)
+        act_copy_value = QAction("Copy value preview", self.browser_json_tree)
+        act_copy_value.triggered.connect(lambda: QApplication.clipboard().setText(item.text(1)))
+        menu.addAction(act_copy_value)
+
+        menu.exec(self.browser_json_tree.viewport().mapToGlobal(pos))
+
     def _ensure_extracted(self) -> bool:
         if not self.work_dir:
             return False
@@ -357,6 +738,8 @@ class MainWindow(QWidget):
 
     # ---------------------------
     # Update dict builders
+    # ---------------------------
+
     # ---------------------------
 
     def _currency_updates(self) -> dict:
@@ -413,6 +796,11 @@ class MainWindow(QWidget):
             self._msg("Extracting...")
             manifest = extract(self.base_dat, self.work_dir)
             self._msg(f"Extract complete: {manifest}")
+            # Populate form fields from the extracted save data
+            self._populate_fields_from_save(show_summary=False)
+            # Refresh browser list if the tab is initialized
+            if hasattr(self, "browser_list"):
+                self._browser_refresh()
         except Exception as e:
             QMessageBox.critical(self, "Extract failed", str(e))
             self._msg(f"ERROR: {e}")
