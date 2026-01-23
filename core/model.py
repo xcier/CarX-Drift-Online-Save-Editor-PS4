@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-BlockKind = Literal["text", "binary", "raw_gz"]
+BlockKind = Literal["text", "binary", "raw_gz", "fallen_text"]
 
 @dataclass
 class BlockInfo:
