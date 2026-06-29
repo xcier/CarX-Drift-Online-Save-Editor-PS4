@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QPalette, QAction
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -30,6 +32,7 @@ from core.app_paths import get_writable_data_dir, migrate_portable_files_if_need
 
 from ui.actions.actions_mixin import ActionsMixin
 from ui.browser.browser_mixin import BrowserMixin
+from ui.themes import DEFAULT_THEME, THEME_NAMES, apply_app_theme, is_dark_theme
 
 from ui.tabs.stats_tab import StatsTab
 from ui.tabs.garage_unlocks_tab import GarageUnlocksTab
@@ -83,10 +86,11 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         self.base_dat: Optional[Path] = None
         self.work_dir: Optional[Path] = None
 
+        self._theme_name = DEFAULT_THEME
         self._dark_enabled = True
         self._build_ui()
         self._setup_auto_apply()
-        self.apply_dark_theme()
+        self.apply_named_theme(self._theme_name)
 
 
     # ---------------------------
@@ -185,86 +189,60 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         except Exception:
             pass
 
-    def apply_dark_theme(self) -> None:
+    def _repolish(self, widget: QWidget) -> None:
+        """Refresh Qt dynamic-property styling after state/theme changes."""
+        try:
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+        except Exception:
+            pass
+
+    def apply_named_theme(self, name: str) -> None:
         app = QApplication.instance()
         if not app:
             return
-        app.setStyle("Fusion")
+        if name not in THEME_NAMES:
+            name = DEFAULT_THEME
+        self._theme_name = name
+        self._dark_enabled = is_dark_theme(name)
+        apply_app_theme(app, name)
 
-        pal = QPalette()
-        pal.setColor(QPalette.ColorRole.Window, QColor(24, 24, 27))
-        pal.setColor(QPalette.ColorRole.WindowText, QColor(235, 235, 240))
-        pal.setColor(QPalette.ColorRole.Base, QColor(18, 18, 20))
-        pal.setColor(QPalette.ColorRole.AlternateBase, QColor(28, 28, 32))
-        pal.setColor(QPalette.ColorRole.Text, QColor(235, 235, 240))
-        pal.setColor(QPalette.ColorRole.Button, QColor(32, 32, 36))
-        pal.setColor(QPalette.ColorRole.ButtonText, QColor(235, 235, 240))
-        pal.setColor(QPalette.ColorRole.Highlight, QColor(90, 120, 255))
-        pal.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(140, 140, 150))
-        app.setPalette(pal)
+        combo = getattr(self, "cmb_theme", None)
+        if combo is not None and combo.currentText() != name:
+            try:
+                combo.blockSignals(True)
+                combo.setCurrentText(name)
+            finally:
+                combo.blockSignals(False)
 
-        app.setStyleSheet(
-            """
-            QGroupBox {
-                border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 10px;
-                margin-top: 12px;
-                padding: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 6px;
-            }
-            QPushButton {
-                padding: 7px 12px;
-                border-radius: 10px;
-                border: 1px solid rgba(255,255,255,0.18);
-            }
-            QPushButton:hover {
-                border-color: rgba(255,255,255,0.35);
-            }
-            QLineEdit, QPlainTextEdit, QSpinBox {
-                padding: 6px 8px;
-                border-radius: 10px;
-                border: 1px solid rgba(255,255,255,0.15);
-                background: rgba(0,0,0,0.30);
-            }
-            QTabWidget::pane {
-                border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 10px;
-                top: -1px;
-            }
-            QTabBar::tab {
-                padding: 8px 12px;
-                border-top-left-radius: 10px;
-                border-top-right-radius: 10px;
-                border: 1px solid rgba(255,255,255,0.12);
-                margin-right: 6px;
-                background: rgba(0,0,0,0.15);
-            }
-            QTabBar::tab:selected {
-                background: rgba(0,0,0,0.35);
-                border-color: rgba(255,255,255,0.22);
-            }
-            """
-        )
+        chk = getattr(self, "chk_dark_mode", None)
+        if chk is not None and chk.isChecked() != self._dark_enabled:
+            try:
+                chk.blockSignals(True)
+                chk.setChecked(self._dark_enabled)
+            finally:
+                chk.blockSignals(False)
+
+        lbl = getattr(self, "_sync_label", None)
+        if lbl is not None:
+            self._repolish(lbl)
+
+    def apply_dark_theme(self) -> None:
+        self.apply_named_theme(DEFAULT_THEME)
 
     def apply_light_theme(self) -> None:
-        app = QApplication.instance()
-        if not app:
-            return
-        app.setStyle("Fusion")
-        app.setPalette(app.style().standardPalette())
-        app.setStyleSheet("")
+        self.apply_named_theme("Clean Light")
 
     def on_dark_mode_toggled(self, enabled: bool) -> None:
-        self._dark_enabled = bool(enabled)
-        if self._dark_enabled:
-            self.apply_dark_theme()
+        # Keep the old checkbox behavior, but route it through the new theme system.
+        if enabled:
+            self.apply_named_theme(DEFAULT_THEME if not is_dark_theme(self._theme_name) else self._theme_name)
         else:
-            self.apply_light_theme()
+            self.apply_named_theme("Clean Light")
+
+    def on_theme_changed(self, name: str) -> None:
+        self.apply_named_theme(name)
 
     # ---------------------------
     # UI layout
@@ -278,17 +256,29 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         module level, causing AttributeError crashes at startup.
         """
 
+        self.setMinimumSize(1160, 720)
+
         self._central = QWidget()
         self.setCentralWidget(self._central)
         root = QVBoxLayout(self._central)
+        root.setContentsMargins(16, 14, 16, 12)
+        root.setSpacing(14)
 
-        header = QLabel("Created by ProtoBuffers")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.setStyleSheet("font-size: 18px; font-weight: 600; letter-spacing: 1px;")
-        root.addWidget(header)
+        root.addWidget(self._build_header_card())
 
         # ---- Tabs ----
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("MainTabs")
+        self.tabs.tabBar().setObjectName("MainTabBar")
+        # Keep the tab row fully custom-painted. Document mode / native tab bases can
+        # draw a thin horizontal line across the whole tab row on Windows.
+        self.tabs.setDocumentMode(False)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        try:
+            self.tabs.tabBar().setDrawBase(False)
+        except Exception:
+            pass
 
         # Core project controls and settings (moved out of top-of-window group boxes)
         self.tabs.addTab(self._build_project_tab(), "Project")
@@ -368,19 +358,121 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
             pass
         self.tabs.addTab(self.unlock_manager_tab, "Advanced Unlocks")
 
-        self.tabs.addTab(self._build_browser_tab(), "Data Browser")
+        self.browser_tab = self._build_browser_tab()
+        self.tabs.addTab(self.browser_tab, "Data Browser")
+
+        self._setup_lazy_refresh()
 
         root.addWidget(self.tabs)
 
         # Status bar sync indicator
         try:
             self._sync_label = QLabel("Synced")
+            self._sync_label.setObjectName("SyncPill")
+            self._sync_label.setProperty("state", "synced")
             self.statusBar().addPermanentWidget(self._sync_label)
         except Exception:
             self._sync_label = None
 
         # Toolbar (keyboard shortcuts) - no top menus to save space
         self._build_actions_bar()
+
+    def _build_header_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("HeroCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(14)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+
+        title = QLabel("CarX Drift Save Editor")
+        title.setObjectName("AppTitle")
+        subtitle = QLabel("Extract • edit • sync • repack")
+        subtitle.setObjectName("AppSubtitle")
+
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+
+        badge = QLabel("ProtoBuffers")
+        badge.setObjectName("AuthorBadge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addLayout(title_col, 1)
+        layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return card
+
+    # ---------------------------
+    # Lazy tab refresh
+    # ---------------------------
+
+    def _setup_lazy_refresh(self) -> None:
+        """Defer expensive extracted-save tab loading until the user opens that tab."""
+        self._lazy_refresh_pending = set()
+        self._lazy_refresh_widgets = {}
+        for attr in (
+            "garage_unlocks_tab",
+            "engine_parts_tab",
+            "progression_tab",
+            "unlock_manager_tab",
+        ):
+            tab = getattr(self, attr, None)
+            if tab is not None:
+                self._lazy_refresh_widgets[tab] = attr
+        browser_tab = getattr(self, "browser_tab", None)
+        if browser_tab is not None:
+            self._lazy_refresh_widgets[browser_tab] = "browser"
+        try:
+            self.tabs.currentChanged.connect(self._on_main_tab_changed)
+        except Exception:
+            pass
+
+    def _mark_extracted_views_stale(self) -> None:
+        """Mark heavyweight views as needing refresh without doing the work now."""
+        try:
+            self._lazy_refresh_pending = {
+                "garage_unlocks_tab",
+                "engine_parts_tab",
+                "progression_tab",
+                "unlock_manager_tab",
+                "browser",
+            }
+        except Exception:
+            self._lazy_refresh_pending = set()
+
+    def _refresh_active_lazy_tab(self) -> None:
+        """Refresh only the currently visible heavyweight tab, if it is stale."""
+        if not getattr(self, "work_dir", None):
+            return
+        try:
+            widget = self.tabs.currentWidget()
+            attr = getattr(self, "_lazy_refresh_widgets", {}).get(widget)
+        except Exception:
+            attr = None
+        if not attr:
+            return
+        pending = getattr(self, "_lazy_refresh_pending", set())
+        if attr not in pending:
+            return
+
+        try:
+            if attr == "browser":
+                if hasattr(self, "_browser_refresh"):
+                    self._browser_refresh()
+            else:
+                tab = getattr(self, attr, None)
+                if tab is not None and hasattr(tab, "refresh_from_workdir"):
+                    tab.refresh_from_workdir(self.work_dir)
+            pending.discard(attr)
+        except Exception as e:
+            try:
+                self._msg(f"[LazyLoad] {attr} refresh failed: {e}")
+            except Exception:
+                pass
+
+    def _on_main_tab_changed(self, _index: int) -> None:
+        self._refresh_active_lazy_tab()
 
     # ---------------------------
     # Project + Options tabs
@@ -390,13 +482,15 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         w = QWidget()
         outer = QVBoxLayout(w)
 
-        proj = QGroupBox("Project")
+        proj = QGroupBox("Project files")
         pl = QVBoxLayout(proj)
+        pl.setSpacing(12)
 
         r1 = QHBoxLayout()
         self.base_edit = QLineEdit()
         self.base_edit.setPlaceholderText("Base memory*.dat (e.g., memory1.dat)")
         b1 = QPushButton("Browse")
+        b1.setProperty("variant", "secondary")
         b1.clicked.connect(self.pick_base)
         r1.addWidget(QLabel("Base:"))
         r1.addWidget(self.base_edit, 1)
@@ -407,6 +501,7 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         self.dir_edit = QLineEdit()
         self.dir_edit.setPlaceholderText("Working folder (manifest.json / blocks/)")
         b2 = QPushButton("Browse")
+        b2.setProperty("variant", "secondary")
         b2.clicked.connect(self.pick_dir)
         r2.addWidget(QLabel("Folder:"))
         r2.addWidget(self.dir_edit, 1)
@@ -417,11 +512,14 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
 
         qa = QGroupBox("Quick actions")
         qal = QHBoxLayout(qa)
+        qal.setSpacing(10)
         btn_extract = QPushButton("Extract")
+        btn_extract.setProperty("variant", "primary")
         btn_extract.clicked.connect(self.on_extract)  # type: ignore[attr-defined]
         btn_load = QPushButton("Load values")
         btn_load.clicked.connect(self.on_load_values)  # type: ignore[attr-defined]
         btn_save = QPushButton("Save → memory.dat")
+        btn_save.setProperty("variant", "primary")
         btn_save.clicked.connect(self.on_save)  # type: ignore[attr-defined]
         qal.addWidget(btn_extract)
         qal.addWidget(btn_load)
@@ -435,16 +533,24 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         w = QWidget()
         outer = QVBoxLayout(w)
 
-        g = QGroupBox("Options")
+        g = QGroupBox("Appearance & safety")
         form = QFormLayout(g)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
 
-        self.chk_dark_mode = QCheckBox("Enable dark mode")
-        self.chk_dark_mode.setChecked(True)
+        self.cmb_theme = QComboBox()
+        self.cmb_theme.addItems(THEME_NAMES)
+        self.cmb_theme.setCurrentText(self._theme_name)
+        self.cmb_theme.currentTextChanged.connect(self.on_theme_changed)
+
+        self.chk_dark_mode = QCheckBox("Use dark theme")
+        self.chk_dark_mode.setChecked(is_dark_theme(self._theme_name))
         self.chk_dark_mode.toggled.connect(self.on_dark_mode_toggled)
 
         self.chk_target_best = QCheckBox("Target best-matching JSON block only (safer)")
         self.chk_target_best.setChecked(True)
 
+        form.addRow("Theme", self.cmb_theme)
         form.addRow(self.chk_dark_mode)
         form.addRow(self.chk_target_best)
         outer.addWidget(g)
@@ -460,6 +566,8 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         lbl = getattr(self, "_sync_label", None)
         if lbl is not None:
             lbl.setText("Unsynced" if not reason else f"Unsynced – {reason}")
+            lbl.setProperty("state", "dirty")
+            self._repolish(lbl)
         if reason:
             try:
                 self._msg(f"[State] Unsynced: {reason}")
@@ -470,6 +578,8 @@ class MainWindow(ActionsMixin, BrowserMixin, QMainWindow):
         lbl = getattr(self, "_sync_label", None)
         if lbl is not None:
             lbl.setText("Synced")
+            lbl.setProperty("state", "synced")
+            self._repolish(lbl)
 
     def _build_actions_bar(self) -> None:
         """Create a compact toolbar and global shortcuts.

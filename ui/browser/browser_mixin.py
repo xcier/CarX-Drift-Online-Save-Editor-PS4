@@ -63,8 +63,8 @@ class BrowserMixin:
         self.browser_show_all.setChecked(False)
         self.browser_show_all.toggled.connect(self._browser_refresh)
 
-        self.browser_rank = QCheckBox("Rank blocks by player keys")
-        self.browser_rank.setChecked(True)
+        self.browser_rank = QCheckBox("Rank blocks by player keys (slower)")
+        self.browser_rank.setChecked(False)
         self.browser_rank.toggled.connect(self._browser_refresh)
 
         self.browser_view_mode = QComboBox()
@@ -274,7 +274,11 @@ class BrowserMixin:
             self.browser_text.setPlainText("No blocks listed in manifest.json.")
             self.browser_right.setCurrentIndex(1)
         else:
-            self.browser_list.setCurrentItem(self.browser_list.topLevelItem(0))
+            self.browser_text.setPlainText(
+                "Blocks listed. Select a block to open it.\n\n"
+                "Tip: leave ranking off for the fastest refresh; ranking parses JSON blocks."
+            )
+            self.browser_right.setCurrentIndex(1)
 
     def _browser_open_selected(self) -> None:
         if not hasattr(self, "browser_list"):

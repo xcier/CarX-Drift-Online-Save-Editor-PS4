@@ -10,6 +10,7 @@ from typing import List, Tuple
 
 from .model import BlockInfo
 from .memory_codec import b64_decode_gz, gzip_mtime, gunzip
+from .json_ops import clear_json_caches
 
 H4SI = b"H4sI"
 BASE64_ALLOWED = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
@@ -125,7 +126,14 @@ def scan_blocks(data: bytes) -> List[Tuple[int, int, bytes]]:
         stripped = b"".join(stored.split())
         if len(stripped) >= 16:
             blocks.append((off, len(stored), stripped))
-        pos = off + 4
+        # Move past the whole candidate region.
+        #
+        # The base64 text itself can randomly contain the literal string
+        # "H4sI".  Advancing by only 4 bytes makes the scanner re-enter the same
+        # base64 blob and treat that internal text as a new gzip member,
+        # which can raise: zlib.error: Error -3 while decompressing data:
+        # unknown header flags set.
+        pos = j if j > off else off + 4
     return blocks
 
 
@@ -187,6 +195,7 @@ def _fallen_trim_json_text(payload_bytes: bytes) -> tuple[str, int]:
 
 
 def extract(memory_dat: Path, out_dir: Path) -> Path:
+    clear_json_caches(out_dir)
     data = memory_dat.read_bytes()
     out_blocks = out_dir / "blocks"
     out_orig = out_dir / "orig_regions"
@@ -306,7 +315,12 @@ def extract(memory_dat: Path, out_dir: Path) -> Path:
             if not gz:
                 continue
             mtime = gzip_mtime(gz)
-            payload = gunzip(gz)
+            try:
+                payload = gunzip(gz)
+            except Exception:
+                # False-positive H4sI/base64 candidate or damaged gzip member.
+                # Keep scanning later blocks instead of aborting the whole extract.
+                continue
             if not payload:
                 continue
 
@@ -370,4 +384,5 @@ def extract(memory_dat: Path, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    clear_json_caches(out_dir)
     return manifest_path

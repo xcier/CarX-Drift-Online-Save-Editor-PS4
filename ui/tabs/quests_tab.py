@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QMessageBox
 )
 
-from core.json_ops import read_text_any, try_load_json
+from core.json_ops import load_json_file_cached
 
 
 def _deep_find_first(obj: Any, keys: List[str]) -> Optional[Tuple[str, Any]]:
@@ -87,7 +87,7 @@ class QuestsTab(QWidget):
         found_val = None
         for p in sorted(blocks_dir.glob("*")):
             try:
-                obj = try_load_json(read_text_any(p))
+                obj = load_json_file_cached(p)
                 if obj is None:
                     continue
                 hit = _deep_find_first(obj, ["<quests>k__BackingField", "quests"])

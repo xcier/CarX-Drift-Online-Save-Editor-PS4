@@ -51,8 +51,18 @@ def b64_decode_gz(b64_stripped: bytes) -> Optional[bytes]:
 
     if raw is None or len(raw) < 10:
         return None
-    # gzip magic
+    # gzip header sanity.
+    #
+    # "H4sI" is the base64 spelling of the first bytes of a gzip member, so a
+    # random/embedded "H4sI" inside a larger base64 blob can decode to bytes
+    # that start with 1F 8B but are not a valid gzip stream.  In that case
+    # zlib raises: "unknown header flags set".  Reject those false positives
+    # here before gunzip() sees them.
     if raw[0:2] != b"\x1f\x8b":
+        return None
+    if raw[2] != 8:  # gzip compression method must be deflate
+        return None
+    if raw[3] & 0xE0:  # reserved gzip FLG bits must be zero
         return None
     return raw
 

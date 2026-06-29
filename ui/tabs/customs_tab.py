@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
-from core.json_ops import read_text_any, try_load_json, dump_json_compact, write_text_utf16le, set_first_keys
+from core.json_ops import read_text_any, try_load_json, load_json_file_cached, dump_json_compact, write_text_utf16le, set_first_keys
 
 
 def _deep_find(obj: Any, key: str):
@@ -162,7 +162,7 @@ class CustomsTab(QWidget):
         found = 0
         for p in sorted(blocks_dir.glob("*")):
             try:
-                o = try_load_json(read_text_any(p))
+                o = load_json_file_cached(p)
             except Exception:
                 continue
 
@@ -249,7 +249,7 @@ class CustomsTab(QWidget):
 
         new_caption = (self.caption_edit.text() or "").strip()
         try:
-            obj = try_load_json(read_text_any(e.path))
+            obj = load_json_file_cached(e.path, copy_obj=True)
         except Exception as ex:
             QMessageBox.critical(self, "Read failed", str(ex))
             return

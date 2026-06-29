@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import re
 
-from core.json_ops import read_text_any, try_load_json
+from core.json_ops import load_json_file_cached
 
 _ID_RE = re.compile(r"^\d+$")
 
@@ -67,7 +67,7 @@ def scan_extracted_dir(extracted_dir: Path) -> ScanResult:
 
     for p in sorted(blocks_dir.glob("*")):
         try:
-            root = try_load_json(read_text_any(p))
+            root = load_json_file_cached(p)
             if root is None:
                 continue
         except Exception:

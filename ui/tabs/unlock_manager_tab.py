@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from core.id_database import IdDatabase
 from core.observed_db import ObservedDb
 from core.scan_ids import scan_extracted_dir
-from core.json_ops import read_text_any, try_load_json, find_first_keys
+from core.json_ops import load_json_file_cached, find_first_keys
 
 
 @dataclass
@@ -206,7 +206,7 @@ class UnlockManagerTab(QWidget):
         out: List[Tuple[Path, Any]] = []
         for p in sorted(blocks_dir.glob("*")):
             try:
-                root = try_load_json(read_text_any(p))
+                root = load_json_file_cached(p)
                 if root is None:
                     continue
                 out.append((p, root))

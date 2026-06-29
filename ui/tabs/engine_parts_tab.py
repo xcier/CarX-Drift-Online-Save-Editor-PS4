@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 
 from core.id_database import IdDatabase
 from core.tunes_db import TunesDb
-from core.json_ops import read_text_any, try_load_json, dump_json_compact, write_text_utf16le
+from core.json_ops import read_text_any, try_load_json, load_json_file_cached, dump_json_compact, write_text_utf16le
 from core.json_ops import json_path_get, json_path_set
 
 
@@ -351,8 +351,7 @@ class EnginePartsTab(QWidget):
 
         for p in sorted(blocks_dir.glob("*.json")):
             try:
-                text = read_text_any(p)
-                obj = try_load_json(text)
+                obj = load_json_file_cached(p)
             except Exception:
                 continue
 
@@ -878,7 +877,7 @@ class EnginePartsTab(QWidget):
 
         for p in sorted(blocks_dir.glob("*.json")):
             try:
-                obj = try_load_json(read_text_any(p))
+                obj = load_json_file_cached(p, copy_obj=True)
             except Exception:
                 continue
             if obj is None:

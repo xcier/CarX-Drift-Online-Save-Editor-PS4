@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import QMenu
 
 from core.id_database import IdDatabase
 from core.apply_presets import apply_updates_to_blocks
-from core.json_ops import read_text_any, try_load_json, find_first_keys
+from core.json_ops import load_json_file_cached, find_first_keys
 
 
 def _norm_ids(v: Any) -> List[str]:
@@ -283,8 +283,7 @@ class GarageUnlocksTab(QWidget):
             best: Optional[Tuple[int, Path, Any, Any]] = None
             for p in sorted(blocks_dir.glob("*")):
                 try:
-                    txt = read_text_any(p)
-                    obj = try_load_json(txt)
+                    obj = load_json_file_cached(p)
                     if obj is None:
                         continue
                 except Exception:
@@ -325,8 +324,7 @@ class GarageUnlocksTab(QWidget):
         favs: List[str] = []
         for p in sorted(blocks_dir.glob("*")):
             try:
-                txt = read_text_any(p)
-                obj = try_load_json(txt)
+                obj = load_json_file_cached(p)
                 if obj is None:
                     continue
             except Exception:

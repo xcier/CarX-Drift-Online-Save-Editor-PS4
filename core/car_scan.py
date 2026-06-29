@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import re
 
-from core.json_ops import read_text_any, try_load_json, find_first_keys
+from core.json_ops import load_json_file_cached, find_first_keys
 from core.scan_ids import scan_extracted_dir
 
 
@@ -55,7 +55,7 @@ def _resolve_blocks_dir(work_dir: Path) -> Path:
 def _iter_block_roots(blocks_dir: Path) -> Iterable[Tuple[str, Any]]:
     for p in sorted(blocks_dir.glob("*")):
         try:
-            root = try_load_json(read_text_any(p))
+            root = load_json_file_cached(p)
         except Exception:
             continue
         if root is None:

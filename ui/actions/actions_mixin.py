@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 import json
+import re
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QLineEdit, QSpinBox
 
 from core.extract import extract
 from core.repack import repack, repack_preflight
 from core.apply_presets import apply_updates_to_blocks
-from core.json_ops import read_text_any, try_load_json, find_first_keys, dump_json_compact, write_text_utf16le
+from core.json_ops import read_text_any, try_load_json, load_json_file_cached, find_first_keys, dump_json_compact, write_text_utf16le
 from core.scan_ids import scan_extracted_dir
 from core.observed_db import ObservedDb
 
@@ -85,15 +86,11 @@ class ActionsMixin:
         self.dir_edit.setText(str(self.work_dir))
         self._msg(f"Folder set: {self.work_dir}")
 
-        # Keep schema-aware tabs aligned with the active work directory.
+        # Do not eagerly scan all extracted JSON here. Mark heavy tabs stale and
+        # refresh only the active tab when the user opens it.
         try:
-            if hasattr(self, "garage_unlocks_tab") and hasattr(self.garage_unlocks_tab, "refresh_from_workdir"):
-                self.garage_unlocks_tab.refresh_from_workdir(self.work_dir)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "unlock_manager_tab") and hasattr(self.unlock_manager_tab, "refresh_from_workdir"):
-                self.unlock_manager_tab.refresh_from_workdir(self.work_dir)  # type: ignore[attr-defined]
+            self._mark_extracted_views_stale()
+            self._refresh_active_lazy_tab()
         except Exception:
             pass
 
@@ -233,7 +230,9 @@ class ActionsMixin:
         self.on_repack()
 
     def on_extract_and_load(self) -> None:
-        self.on_extract()
+        # Avoid refreshing schema/browser tabs twice. on_load_values() does the
+        # full UI refresh after extraction.
+        self.on_extract(refresh_ui=False)
         self.on_load_values()
 
     # ---------------------------
@@ -256,6 +255,9 @@ class ActionsMixin:
         except Exception:
             pass
 
+        # Initial load should be fast. Only scan scalar fields needed by the
+        # visible quick-edit forms. Large list-heavy tabs (garage, engine parts,
+        # car slots, advanced unlocks, raw browser) are lazy-loaded when opened.
         keys = [
             # Currency
             "coins",
@@ -273,28 +275,60 @@ class ActionsMixin:
             "cups1",
             "cups2",
             "cups3",
-            # Garage / Unlocks
-            "m_cars",
-            "availableTracks",
-            "availableCars",
         ]
 
         found: Dict[str, Any] = {}
         blocks_dir = self.work_dir / "blocks"
-        for p in sorted(blocks_dir.glob("*")):
+
+        # Fast path: avoid json.loads() on every extracted block. The CarX blocks
+        # are compact JSON, so scalar values can be safely recovered by matching
+        # the JSON key and then decoding that single literal with json.loads().
+        literal_patterns = {
+            k: re.compile(
+                r'"' + re.escape(k) + r'"\s*:\s*('
+                r'"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null'
+                r')'
+            )
+            for k in keys
+        }
+
+        for p in sorted(blocks_dir.glob("*.json")):
+            if len(found) == len(keys):
+                break
             try:
                 txt = read_text_any(p)
-                obj = try_load_json(txt)
-                if obj is None:
-                    continue
-                got = find_first_keys(obj, keys)
-                for k, v in got.items():
-                    if k not in found:
-                        found[k] = v
-                if len(found) == len(keys):
-                    break
             except Exception:
                 continue
+            for k in keys:
+                if k in found:
+                    continue
+                if f'"{k}"' not in txt:
+                    continue
+                m = literal_patterns[k].search(txt)
+                if not m:
+                    continue
+                try:
+                    found[k] = json.loads(m.group(1))
+                except Exception:
+                    found[k] = m.group(1).strip('"')
+
+        # Fallback only if the quick scanner missed something. This preserves
+        # compatibility with unusual pretty-printed or nested values while still
+        # avoiding a full parse in the normal case.
+        if len(found) < len(keys):
+            for p in sorted(blocks_dir.glob("*.json")):
+                try:
+                    obj = load_json_file_cached(p)
+                    if obj is None:
+                        continue
+                    got = find_first_keys(obj, [k for k in keys if k not in found])
+                    for k, v in got.items():
+                        if k not in found:
+                            found[k] = v
+                    if len(found) == len(keys):
+                        break
+                except Exception:
+                    continue
 
         def _set_line(le: QLineEdit, v: Any) -> None:
             if v is None:
@@ -323,14 +357,12 @@ class ActionsMixin:
             except Exception:
                 pass
 
-        # Let specialized tabs refresh.
-        for attr in ("garage_unlocks_tab", "engine_parts_tab", "quests_tab", "progression_tab"):
-            try:
-                tab = getattr(self, attr, None)
-                if tab is not None and hasattr(tab, "refresh_from_workdir"):
-                    tab.refresh_from_workdir(self.work_dir)
-            except Exception:
-                pass
+        # Heavy views are deferred for speed. They refresh when opened.
+        try:
+            self._mark_extracted_views_stale()
+            self._refresh_active_lazy_tab()
+        except Exception:
+            pass
 
         # ID scanning is deferred for speed. Advanced Unlocks / Database will scan on-demand.
 
@@ -356,7 +388,7 @@ class ActionsMixin:
     # Extract / apply / repack
     # ---------------------------
 
-    def on_extract(self) -> None:
+    def on_extract(self, *, refresh_ui: bool = True) -> None:
         if not self._ensure_ready():
             return
         try:
@@ -371,28 +403,10 @@ class ActionsMixin:
             # would cause redundant refreshes (and in turn redundant EngineParts
             # DB loads/log spam) during a single user action.
 
-            # Refresh schema-aware views that depend on blocks/ content.
-            try:
-                if hasattr(self, "garage_unlocks_tab") and hasattr(self.garage_unlocks_tab, "refresh_from_workdir"):
-                    self.garage_unlocks_tab.refresh_from_workdir(self.work_dir)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            try:
-                if hasattr(self, "unlock_manager_tab") and hasattr(self.unlock_manager_tab, "refresh_from_workdir"):
-                    self.unlock_manager_tab.refresh_from_workdir(self.work_dir)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-            try:
-                if hasattr(self, "favorites_tab") and hasattr(self.favorites_tab, "refresh_from_workdir"):
-                    self.favorites_tab.refresh_from_workdir(self.work_dir)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-            # Browser refresh
-            if hasattr(self, "_browser_refresh"):
+            if refresh_ui:
                 try:
-                    self._browser_refresh()
+                    self._mark_extracted_views_stale()
+                    self._refresh_active_lazy_tab()
                 except Exception:
                     pass
         except Exception as e:
@@ -510,8 +524,7 @@ class ActionsMixin:
             out: list[tuple[Path, Any]] = []
             for p in sorted(blocks_dir.glob("*")):
                 try:
-                    txt = read_text_any(p)
-                    obj = try_load_json(txt)
+                    obj = load_json_file_cached(p)
                     if obj is None:
                         continue
                     out.append((p, obj))

@@ -2,10 +2,51 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import copy
 
 from .fs_atomic import atomic_write_bytes
 
-from typing import Any, Dict, List, Tuple, Set
+from typing import Any, Dict, List, Tuple, Set, Optional
+
+# Small, process-local cache for extracted block files. Large CarX saves can
+# contain hundreds of UTF-16LE JSON blocks totaling 80+ MB. Several UI tabs read
+# the same blocks during one load; caching by (path, mtime, size) removes the
+# repeated disk reads/decodes and avoids the slowdown introduced by the safer
+# full-block scanner.
+_TEXT_CACHE: Dict[str, Tuple[int, int, str]] = {}
+_JSON_CACHE: Dict[str, Tuple[int, int, Any]] = {}
+_MAX_CACHED_FILE_BYTES = 12 * 1024 * 1024
+
+
+def _file_sig(path: Path) -> Tuple[str, int, int]:
+    st = path.stat()
+    return str(path.resolve()), int(st.st_mtime_ns), int(st.st_size)
+
+
+def clear_json_caches(root: Optional[Path] = None) -> None:
+    """Clear cached decoded text/JSON. If root is supplied, clear only that tree."""
+    if root is None:
+        _TEXT_CACHE.clear()
+        _JSON_CACHE.clear()
+        return
+    try:
+        prefix = str(root.resolve())
+    except Exception:
+        prefix = str(root)
+    for cache in (_TEXT_CACHE, _JSON_CACHE):
+        for k in list(cache.keys()):
+            if k.startswith(prefix):
+                cache.pop(k, None)
+
+
+def _invalidate_path(path: Path) -> None:
+    try:
+        k = str(path.resolve())
+    except Exception:
+        k = str(path)
+    _TEXT_CACHE.pop(k, None)
+    _JSON_CACHE.pop(k, None)
+
 
 def read_text_any(path: Path) -> str:
     """Read a text file that may be UTF-8 or UTF-16LE.
@@ -14,12 +55,21 @@ def read_text_any(path: Path) -> str:
     files are UTF-8. Prefer UTF-8 unless the byte pattern strongly indicates
     UTF-16LE (BOM or high NUL-byte ratio).
     """
+    key, mtime_ns, size = _file_sig(path)
+    cached = _TEXT_CACHE.get(key)
+    if cached is not None and cached[0] == mtime_ns and cached[1] == size:
+        return cached[2]
+
     b = path.read_bytes()
 
     # UTF-16LE BOM
+    text: str
     if b.startswith(b"\xff\xfe"):
         try:
-            return b.decode("utf-16le")
+            text = b.decode("utf-16le")
+            if size <= _MAX_CACHED_FILE_BYTES:
+                _TEXT_CACHE[key] = (mtime_ns, size, text)
+            return text
         except UnicodeDecodeError:
             pass
 
@@ -27,30 +77,58 @@ def read_text_any(path: Path) -> str:
     nul = b.count(b"\x00")
     if nul > max(16, len(b) // 10):
         try:
-            return b.decode("utf-16le")
+            text = b.decode("utf-16le")
+            if size <= _MAX_CACHED_FILE_BYTES:
+                _TEXT_CACHE[key] = (mtime_ns, size, text)
+            return text
         except UnicodeDecodeError:
             pass
 
     # Prefer UTF-8
     try:
-        return b.decode("utf-8")
+        text = b.decode("utf-8")
     except UnicodeDecodeError:
         # Fallback to UTF-16LE
         try:
-            return b.decode("utf-16le")
+            text = b.decode("utf-16le")
         except UnicodeDecodeError:
-            return b.decode("utf-8", errors="replace")
+            text = b.decode("utf-8", errors="replace")
+
+    if size <= _MAX_CACHED_FILE_BYTES:
+        _TEXT_CACHE[key] = (mtime_ns, size, text)
+    return text
+
 
 def write_text_utf16le(path: Path, s: str) -> None:
     """Write text as UTF-16LE (no newlines translation) using an atomic write."""
+    _invalidate_path(path)
     data = s.encode("utf-16le")
     atomic_write_bytes(path, data)
+    _invalidate_path(path)
 
 def try_load_json(text: str) -> Any:
     # tolerate UTF-8 BOM
     if text and text[0] == "\ufeff":
         text = text[1:]
     return json.loads(text)
+
+
+def load_json_file_cached(path: Path, *, copy_obj: bool = False) -> Any:
+    """Load a JSON file with a path-aware cache.
+
+    copy_obj=True returns a deep copy for callers that intend to mutate the
+    object before writing it back. Read-only scanners should use the default.
+    """
+    key, mtime_ns, size = _file_sig(path)
+    cached = _JSON_CACHE.get(key)
+    if cached is not None and cached[0] == mtime_ns and cached[1] == size:
+        obj = cached[2]
+        return copy.deepcopy(obj) if copy_obj else obj
+
+    obj = try_load_json(read_text_any(path))
+    if size <= _MAX_CACHED_FILE_BYTES:
+        _JSON_CACHE[key] = (mtime_ns, size, obj)
+    return copy.deepcopy(obj) if copy_obj else obj
 
 def dump_json_compact(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
